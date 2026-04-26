@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Image from 'next/image';
 import { useParams } from 'next/navigation';
 import { Card, Button, Badge, Avatar } from '@/components/ui';
 import { formatNumber, formatCurrency, formatNiche, formatEngagementRate } from '@creatormatch/shared-utils';
@@ -214,17 +213,12 @@ export default function CreatorProfilePage() {
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {creator.portfolioItems.map((item) => (
                 <div key={item.id} className="relative group">
-                  <div className="relative w-full h-48 rounded-lg overflow-hidden bg-gray-100">
-                    <Image
-                      src={item.mediaUrl}
-                      alt={item.title}
-                      fill
-                      sizes="(max-width: 768px) 50vw, 33vw"
-                      className="object-cover"
-                      loading="lazy"
-                    />
-                  </div>
-                  <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-50 transition-all rounded-lg flex items-end p-3 pointer-events-none">
+                  <img
+                    src={item.mediaUrl}
+                    alt={item.title}
+                    className="w-full h-48 object-cover rounded-lg"
+                  />
+                  <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-50 transition-all rounded-lg flex items-end p-3">
                     <div className="text-white opacity-0 group-hover:opacity-100 transition-opacity">
                       <p className="font-medium">{item.title}</p>
                       <p className="text-sm">{formatNumber(item.likesCount)} likes</p>

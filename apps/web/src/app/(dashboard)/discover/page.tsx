@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
@@ -16,49 +16,32 @@ import {
 import { NicheCategory } from '@creatormatch/shared-types';
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || '';
-const FILTER_DEBOUNCE_MS = 300;
 
 const NICHES: NicheCategory[] = [
   'food', 'fashion', 'beauty', 'fitness', 'travel', 'lifestyle',
-  'tech', 'gaming', 'parenting', 'pets', 'home_decor', 'other',
+  'tech', 'gaming', 'parenting', 'pets', 'home_decor', 'other'
 ];
 
 export default function DiscoverPage() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
-  const markers = useRef<mapboxgl.Marker[]>([]);
   const [viewMode, setViewMode] = useState<'map' | 'list'>('list');
   const [showFilters, setShowFilters] = useState(false);
-
-  // Two filter layers: `draft` is what the user is currently typing into
-  // (changes every keystroke), `committed` is what we actually send to the
-  // API (debounced). This stops the UI from spamming the search endpoint
-  // on every digit of a follower count.
   const [filters, setFilters] = useState({
     niches: [] as NicheCategory[],
     minFollowers: 1000,
     maxFollowers: 50000,
     radiusMiles: 25,
   });
-  const [committedFilters, setCommittedFilters] = useState(filters);
 
   const { creators, loading, searchCreators } = useCreators();
 
   useEffect(() => {
-    const id = setTimeout(() => setCommittedFilters(filters), FILTER_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [filters]);
+    searchCreators(filters);
+  }, [filters, searchCreators]);
 
-  useEffect(() => {
-    searchCreators(committedFilters);
-  }, [committedFilters, searchCreators]);
-
-  // Init map ONCE when entering map view. Avoid the previous full
-  // teardown-and-rebuild on every search result update — that flashed the
-  // map and reset the user's pan/zoom.
   useEffect(() => {
     if (viewMode !== 'map' || !mapContainer.current || !MAPBOX_TOKEN) return;
-    if (map.current) return; // already initialized
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
@@ -70,37 +53,27 @@ export default function DiscoverPage() {
 
     map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
-    return () => {
-      markers.current.forEach((m) => m.remove());
-      markers.current = [];
-      map.current?.remove();
-      map.current = null;
-    };
-  }, [viewMode]);
-
-  // Marker management runs independently of map init: clear and re-add
-  // markers when results change, but never touch the map instance itself.
-  useEffect(() => {
-    if (viewMode !== 'map' || !map.current) return;
-
-    markers.current.forEach((m) => m.remove());
-    markers.current = [];
-
+    // Add markers for creators
     creators.forEach((creator) => {
-      if (!creator.location) return;
-      const popup = new mapboxgl.Popup({ offset: 25 }).setHTML(`
-        <div class="p-2">
-          <strong>${escapeHtml(creator.displayName)}</strong>
-          <p class="text-sm text-gray-600">${formatNumber(creator.totalFollowers)} followers</p>
-        </div>
-      `);
-      const marker = new mapboxgl.Marker({ color: '#0ea5e9' })
-        .setLngLat([creator.location.lng, creator.location.lat])
-        .setPopup(popup)
-        .addTo(map.current!);
-      markers.current.push(marker);
+      if (creator.location) {
+        const popup = new mapboxgl.Popup({ offset: 25 }).setHTML(`
+          <div class="p-2">
+            <strong>${creator.displayName}</strong>
+            <p class="text-sm text-gray-600">${formatNumber(creator.totalFollowers)} followers</p>
+          </div>
+        `);
+
+        new mapboxgl.Marker({ color: '#0ea5e9' })
+          .setLngLat([creator.location.lng, creator.location.lat])
+          .setPopup(popup)
+          .addTo(map.current!);
+      }
     });
-  }, [creators, viewMode]);
+
+    return () => {
+      map.current?.remove();
+    };
+  }, [viewMode, creators]);
 
   const toggleNiche = (niche: NicheCategory) => {
     setFilters((prev) => ({
@@ -111,43 +84,39 @@ export default function DiscoverPage() {
     }));
   };
 
-  // Sample creators are stable across renders — useMemo prevents them being
-  // re-created (and re-keyed) every render.
-  const sampleCreators = useMemo(
-    () => [
-      {
-        id: '1',
-        displayName: 'Sarah Johnson',
-        city: 'Austin',
-        state: 'TX',
-        niches: ['food', 'lifestyle'] as NicheCategory[],
-        totalFollowers: 12500,
-        avgEngagementRate: 4.2,
-        baseRateCents: 15000,
-      },
-      {
-        id: '2',
-        displayName: 'Mike Chen',
-        city: 'Denver',
-        state: 'CO',
-        niches: ['fitness', 'lifestyle'] as NicheCategory[],
-        totalFollowers: 8200,
-        avgEngagementRate: 5.8,
-        baseRateCents: 10000,
-      },
-      {
-        id: '3',
-        displayName: 'Emma Davis',
-        city: 'Portland',
-        state: 'OR',
-        niches: ['fashion', 'beauty'] as NicheCategory[],
-        totalFollowers: 25000,
-        avgEngagementRate: 3.5,
-        baseRateCents: 20000,
-      },
-    ],
-    []
-  );
+  // Sample creators for demo
+  const sampleCreators = [
+    {
+      id: '1',
+      displayName: 'Sarah Johnson',
+      city: 'Austin',
+      state: 'TX',
+      niches: ['food', 'lifestyle'] as NicheCategory[],
+      totalFollowers: 12500,
+      avgEngagementRate: 4.2,
+      baseRateCents: 15000,
+    },
+    {
+      id: '2',
+      displayName: 'Mike Chen',
+      city: 'Denver',
+      state: 'CO',
+      niches: ['fitness', 'lifestyle'] as NicheCategory[],
+      totalFollowers: 8200,
+      avgEngagementRate: 5.8,
+      baseRateCents: 10000,
+    },
+    {
+      id: '3',
+      displayName: 'Emma Davis',
+      city: 'Portland',
+      state: 'OR',
+      niches: ['fashion', 'beauty'] as NicheCategory[],
+      totalFollowers: 25000,
+      avgEngagementRate: 3.5,
+      baseRateCents: 20000,
+    },
+  ];
 
   const displayCreators = creators.length > 0 ? creators : sampleCreators;
 
@@ -171,18 +140,12 @@ export default function DiscoverPage() {
 
           <div className="flex border border-gray-300 rounded-lg overflow-hidden">
             <button
-              type="button"
-              aria-label="List view"
-              aria-pressed={viewMode === 'list'}
               onClick={() => setViewMode('list')}
               className={`p-2 ${viewMode === 'list' ? 'bg-primary-50 text-primary-600' : 'text-gray-500 hover:bg-gray-50'}`}
             >
               <ListBulletIcon className="h-5 w-5" />
             </button>
             <button
-              type="button"
-              aria-label="Map view"
-              aria-pressed={viewMode === 'map'}
               onClick={() => setViewMode('map')}
               className={`p-2 ${viewMode === 'map' ? 'bg-primary-50 text-primary-600' : 'text-gray-500 hover:bg-gray-50'}`}
             >
@@ -199,10 +162,8 @@ export default function DiscoverPage() {
             <div className="flex flex-wrap gap-2 mb-4">
               {NICHES.map((niche) => (
                 <button
-                  type="button"
                   key={niche}
                   onClick={() => toggleNiche(niche)}
-                  aria-pressed={filters.niches.includes(niche)}
                   className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
                     filters.niches.includes(niche)
                       ? 'bg-primary-600 text-white'
@@ -216,11 +177,10 @@ export default function DiscoverPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label htmlFor="filter-min-followers" className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
                   Min Followers
                 </label>
                 <input
-                  id="filter-min-followers"
                   type="number"
                   value={filters.minFollowers}
                   onChange={(e) => setFilters((prev) => ({ ...prev, minFollowers: parseInt(e.target.value) || 0 }))}
@@ -228,11 +188,10 @@ export default function DiscoverPage() {
                 />
               </div>
               <div>
-                <label htmlFor="filter-max-followers" className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
                   Max Followers
                 </label>
                 <input
-                  id="filter-max-followers"
                   type="number"
                   value={filters.maxFollowers}
                   onChange={(e) => setFilters((prev) => ({ ...prev, maxFollowers: parseInt(e.target.value) || 50000 }))}
@@ -240,11 +199,10 @@ export default function DiscoverPage() {
                 />
               </div>
               <div>
-                <label htmlFor="filter-radius" className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
                   Radius (miles)
                 </label>
                 <input
-                  id="filter-radius"
                   type="number"
                   value={filters.radiusMiles}
                   onChange={(e) => setFilters((prev) => ({ ...prev, radiusMiles: parseInt(e.target.value) || 25 }))}
@@ -260,7 +218,6 @@ export default function DiscoverPage() {
         <div
           ref={mapContainer}
           className="h-[600px] rounded-xl overflow-hidden border border-gray-200"
-          aria-label="Creator map"
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -332,17 +289,4 @@ export default function DiscoverPage() {
       )}
     </div>
   );
-}
-
-/**
- * Minimal HTML escaper for the inline popup template — prevents an XSS via
- * a creator displayName containing HTML/JS.
- */
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }

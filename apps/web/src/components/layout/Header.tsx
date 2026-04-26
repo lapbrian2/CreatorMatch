@@ -51,16 +51,9 @@ export function Header() {
           <div className="flex items-center space-x-4">
             {isAuthenticated ? (
               <>
-                <button
-                  type="button"
-                  className="relative p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  aria-label="Notifications (you have unread notifications)"
-                >
-                  <BellIcon className="h-6 w-6" aria-hidden="true" />
-                  <span
-                    aria-hidden="true"
-                    className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full"
-                  />
+                <button className="relative p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg">
+                  <BellIcon className="h-6 w-6" />
+                  <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full" />
                 </button>
 
                 <Menu as="div" className="relative">

@@ -150,10 +150,6 @@ model CreatorProfile {
   matchScores    MatchScore[]
   deals          Deal[]
 
-  // PostGIS geometry column kept in sync with latitude/longitude via DB trigger
-  // (see prisma/migrations/manual/postgis.sql). GIST index lives there too.
-  location Unsupported("geometry(Point, 4326)")?
-
   @@index([totalFollowers])
   @@index([avgEngagementRate])
   @@index([isAvailable])
@@ -261,9 +257,6 @@ model BusinessProfile {
   deals                Deal[]
   subscriptionPayments SubscriptionPayment[]
 
-  // PostGIS geometry column kept in sync with latitude/longitude via DB trigger.
-  location Unsupported("geometry(Point, 4326)")?
-
   @@index([subscriptionStatus])
   @@map("business_profiles")
 }
@@ -330,8 +323,7 @@ model MatchScore {
   creator  CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
 
   @@unique([campaignId, creatorId])
-  @@index([campaignId, overallScore(sort: Desc)])
-  @@index([creatorId])
+  @@index([overallScore(sort: Desc)])
   @@map("match_scores")
 }
 
@@ -363,17 +355,17 @@ model Deal {
   createdAt           DateTime      @default(now()) @map("created_at")
   updatedAt           DateTime      @updatedAt @map("updated_at")
 
-  campaign      Campaign        @relation(fields: [campaignId], references: [id], onDelete: Restrict)
-  business      BusinessProfile @relation(fields: [businessId], references: [id], onDelete: Restrict)
-  creator       CreatorProfile  @relation(fields: [creatorId], references: [id], onDelete: Restrict)
+  campaign      Campaign        @relation(fields: [campaignId], references: [id])
+  business      BusinessProfile @relation(fields: [businessId], references: [id])
+  creator       CreatorProfile  @relation(fields: [creatorId], references: [id])
   submissions   DealSubmission[]
   reviews       Review[]
   conversations Conversation[]
   transactions  Transaction[]
 
   @@index([campaignId])
-  @@index([businessId, status, createdAt(sort: Desc)])
-  @@index([creatorId, status, createdAt(sort: Desc)])
+  @@index([businessId])
+  @@index([creatorId])
   @@index([status])
   @@map("deals")
 }
@@ -448,9 +440,6 @@ model Conversation {
   participant2 User      @relation("Participant2", fields: [participant2Id], references: [id])
   messages     Message[]
 
-  // Application sorts participant IDs lexicographically before insert so this
-  // unique constraint catches duplicate conversations between the same pair.
-  @@unique([participant1Id, participant2Id, dealId])
   @@index([participant1Id])
   @@index([participant2Id])
   @@index([dealId])
@@ -500,7 +489,6 @@ model Transaction {
   payer User  @relation("Payer", fields: [payerId], references: [id])
   payee User  @relation("Payee", fields: [payeeId], references: [id])
 
-  @@unique([stripePaymentIntentId])
   @@index([dealId])
   @@index([payerId])
   @@index([payeeId])
@@ -522,7 +510,6 @@ model SubscriptionPayment {
 
   business BusinessProfile @relation(fields: [businessId], references: [id])
 
-  @@unique([stripeInvoiceId])
   @@index([businessId])
   @@map("subscription_payments")
 }

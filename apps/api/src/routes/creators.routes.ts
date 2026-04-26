@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { creatorsController } from '../controllers/creators.controller';
 import { validateBody, validateQuery } from '../middleware/validation.middleware';
 import { authenticate, optionalAuth, requireCreator } from '../middleware/auth.middleware';
-import { authLimiter, strictLimiter } from '../middleware/rateLimit.middleware';
 import {
   creatorSearchValidator,
   updateCreatorValidator,
@@ -11,9 +10,8 @@ import {
 
 const router = Router();
 
-// Public — search is unauthenticated and CPU-heavy when geo-filtered, so
-// throttle aggressively per-IP on top of the global limiter.
-router.get('/', strictLimiter, validateQuery(creatorSearchValidator), (req, res, next) =>
+// Public routes
+router.get('/', validateQuery(creatorSearchValidator), (req, res, next) =>
   creatorsController.search(req, res, next)
 );
 
@@ -25,7 +23,7 @@ router.get('/:id/portfolio', (req, res, next) =>
   creatorsController.getPortfolio(req, res, next)
 );
 
-// Protected — creator only.
+// Protected routes (creator only)
 router.get('/me/profile', authenticate, requireCreator, (req, res, next) =>
   creatorsController.getMyProfile(req, res, next)
 );
@@ -48,17 +46,6 @@ router.post(
 
 router.delete('/me/portfolio/:itemId', authenticate, requireCreator, (req, res, next) =>
   creatorsController.removePortfolioItem(req, res, next)
-);
-
-// Stripe Connect onboarding — produces a hosted onboarding URL the creator
-// completes once. The webhook (`account.updated`) flips
-// `stripeOnboardingComplete` once Stripe verifies identity + payout method.
-router.post('/me/stripe/onboard', authLimiter, authenticate, requireCreator, (req, res, next) =>
-  creatorsController.stripeOnboard(req, res, next)
-);
-
-router.post('/me/stripe/dashboard', authenticate, requireCreator, (req, res, next) =>
-  creatorsController.stripeDashboard(req, res, next)
 );
 
 export default router;

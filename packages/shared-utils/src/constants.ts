@@ -103,8 +103,7 @@ export const API_ROUTES = {
     get: (id: string) => `/creators/${id}`,
     portfolio: (id: string) => `/creators/${id}/portfolio`,
     socialAccounts: (id: string) => `/creators/${id}/social-accounts`,
-    stripeOnboard: '/creators/me/stripe/onboard',
-    stripeDashboard: '/creators/me/stripe/dashboard',
+    stripeOnboard: (id: string) => `/creators/${id}/stripe/onboard`,
   },
   businesses: {
     get: (id: string) => `/businesses/${id}`,

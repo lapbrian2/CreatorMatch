@@ -11,17 +11,11 @@ declare global {
   }
 }
 
-/**
- * All middleware here propagates errors via `next(err)` rather than `throw`.
- * `throw` works in Express 4 sync contexts but silently breaks the moment
- * any of these helpers becomes async (a realistic migration path) — using
- * `next(err)` is unconditionally safe.
- */
 export function authenticate(req: Request, _res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return next(new AppError(ErrorCodes.UNAUTHORIZED, 'Authentication required', 401));
+    throw new AppError(ErrorCodes.UNAUTHORIZED, 'Authentication required', 401);
   }
 
   const token = authHeader.split(' ')[1];
@@ -31,7 +25,7 @@ export function authenticate(req: Request, _res: Response, next: NextFunction) {
     req.user = payload;
     next();
   } catch {
-    next(new AppError(ErrorCodes.TOKEN_INVALID, 'Invalid or expired token', 401));
+    throw new AppError(ErrorCodes.TOKEN_INVALID, 'Invalid or expired token', 401);
   }
 }
 
@@ -44,7 +38,7 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
       const payload = verifyAccessToken(token);
       req.user = payload;
     } catch {
-      // Token invalid, but we continue without auth.
+      // Token invalid, but we continue without auth
     }
   }
 
@@ -54,37 +48,41 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
 export function requireRole(...roles: UserRole[]) {
   return (req: Request, _res: Response, next: NextFunction) => {
     if (!req.user) {
-      return next(new AppError(ErrorCodes.UNAUTHORIZED, 'Authentication required', 401));
+      throw new AppError(ErrorCodes.UNAUTHORIZED, 'Authentication required', 401);
     }
+
     if (!roles.includes(req.user.role)) {
-      return next(
-        new AppError(
-          ErrorCodes.FORBIDDEN,
-          'You do not have permission to access this resource',
-          403
-        )
+      throw new AppError(
+        ErrorCodes.FORBIDDEN,
+        'You do not have permission to access this resource',
+        403
       );
     }
+
     next();
   };
 }
 
 export function requireCreator(req: Request, _res: Response, next: NextFunction) {
   if (!req.user) {
-    return next(new AppError(ErrorCodes.UNAUTHORIZED, 'Authentication required', 401));
+    throw new AppError(ErrorCodes.UNAUTHORIZED, 'Authentication required', 401);
   }
+
   if (req.user.role !== 'creator') {
-    return next(new AppError(ErrorCodes.FORBIDDEN, 'Creator account required', 403));
+    throw new AppError(ErrorCodes.FORBIDDEN, 'Creator account required', 403);
   }
+
   next();
 }
 
 export function requireBusiness(req: Request, _res: Response, next: NextFunction) {
   if (!req.user) {
-    return next(new AppError(ErrorCodes.UNAUTHORIZED, 'Authentication required', 401));
+    throw new AppError(ErrorCodes.UNAUTHORIZED, 'Authentication required', 401);
   }
+
   if (req.user.role !== 'business') {
-    return next(new AppError(ErrorCodes.FORBIDDEN, 'Business account required', 403));
+    throw new AppError(ErrorCodes.FORBIDDEN, 'Business account required', 403);
   }
+
   next();
 }
