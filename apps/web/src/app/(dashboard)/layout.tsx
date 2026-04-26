@@ -12,21 +12,28 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const router = useRouter();
-  const { isAuthenticated, refreshUser } = useAuthStore();
+  const { isAuthenticated, isInitializing, initialize } = useAuthStore();
 
+  // Kick off the cookie-based session restore on first mount.
   useEffect(() => {
-    refreshUser();
-  }, [refreshUser]);
+    initialize();
+  }, [initialize]);
 
+  // Only redirect AFTER initialization settles, so a hard refresh with a
+  // valid refresh cookie doesn't bounce the user to /login mid-restore.
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!isInitializing && !isAuthenticated) {
       router.push('/login');
     }
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, isInitializing, router]);
 
-  if (!isAuthenticated) {
+  if (isInitializing || !isAuthenticated) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div
+        className="min-h-screen flex items-center justify-center"
+        role="status"
+        aria-label="Restoring session"
+      >
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600" />
       </div>
     );

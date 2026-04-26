@@ -83,6 +83,28 @@ export class CreatorsController {
       next(error);
     }
   }
+
+  async stripeOnboard(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.sub;
+      const result = await creatorService.createStripeOnboardingLink(userId);
+
+      sendSuccess(res, result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async stripeDashboard(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.sub;
+      const result = await creatorService.getStripeDashboardLink(userId);
+
+      sendSuccess(res, result);
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const creatorsController = new CreatorsController();

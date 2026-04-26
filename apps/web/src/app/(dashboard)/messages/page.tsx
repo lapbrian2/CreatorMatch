@@ -9,52 +9,62 @@ export default function MessagesPage() {
   const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState('');
 
-  // Sample conversations - in real app, fetch from API
-  const conversations = [
-    {
-      id: '1',
-      otherParticipant: { name: 'Sarah Johnson', avatarUrl: null },
-      lastMessagePreview: 'Thanks for reaching out! I would love to...',
-      lastMessageAt: new Date(Date.now() - 1000 * 60 * 30).toISOString(), // 30 min ago
-      unreadCount: 2,
-    },
-    {
-      id: '2',
-      otherParticipant: { name: 'Mike Chen', avatarUrl: null },
-      lastMessagePreview: "That sounds great! Let's discuss the details.",
-      lastMessageAt: new Date(Date.now() - 1000 * 60 * 60 * 3).toISOString(), // 3 hours ago
-      unreadCount: 0,
-    },
-    {
-      id: '3',
-      otherParticipant: { name: 'Emma Davis', avatarUrl: null },
-      lastMessagePreview: 'I have submitted the content for review.',
-      lastMessageAt: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(), // 1 day ago
-      unreadCount: 0,
-    },
-  ];
+  // Sample data — built lazily inside `useState` initializers so `Date.now()`
+  // only runs on the client. Computing it at module-eval time produced
+  // server/client timestamp mismatches and React hydration warnings.
+  const [conversations] = useState(() => {
+    const now = Date.now();
+    return [
+      {
+        id: '1',
+        otherParticipant: { name: 'Sarah Johnson', avatarUrl: null },
+        lastMessagePreview: 'Thanks for reaching out! I would love to...',
+        lastMessageAt: new Date(now - 1000 * 60 * 30).toISOString(),
+        unreadCount: 2,
+      },
+      {
+        id: '2',
+        otherParticipant: { name: 'Mike Chen', avatarUrl: null },
+        lastMessagePreview: "That sounds great! Let's discuss the details.",
+        lastMessageAt: new Date(now - 1000 * 60 * 60 * 3).toISOString(),
+        unreadCount: 0,
+      },
+      {
+        id: '3',
+        otherParticipant: { name: 'Emma Davis', avatarUrl: null },
+        lastMessagePreview: 'I have submitted the content for review.',
+        lastMessageAt: new Date(now - 1000 * 60 * 60 * 24).toISOString(),
+        unreadCount: 0,
+      },
+    ];
+  });
 
-  // Sample messages - in real app, fetch from API
-  const messages = [
-    {
-      id: '1',
-      senderId: 'other',
-      content: "Hi! I saw your campaign and I think I would be a great fit. I've worked with several local restaurants before.",
-      createdAt: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
-    },
-    {
-      id: '2',
-      senderId: 'me',
-      content: "Thanks for reaching out, Sarah! I checked out your profile and love your content style. Would you be interested in doing 2 posts and 3 stories for our summer campaign?",
-      createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    },
-    {
-      id: '3',
-      senderId: 'other',
-      content: 'Thanks for reaching out! I would love to collaborate on this. What are the specific deliverables you have in mind?',
-      createdAt: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-    },
-  ];
+  const [messages] = useState(() => {
+    const now = Date.now();
+    return [
+      {
+        id: '1',
+        senderId: 'other',
+        content:
+          "Hi! I saw your campaign and I think I would be a great fit. I've worked with several local restaurants before.",
+        createdAt: new Date(now - 1000 * 60 * 60).toISOString(),
+      },
+      {
+        id: '2',
+        senderId: 'me',
+        content:
+          "Thanks for reaching out, Sarah! I checked out your profile and love your content style. Would you be interested in doing 2 posts and 3 stories for our summer campaign?",
+        createdAt: new Date(now - 1000 * 60 * 45).toISOString(),
+      },
+      {
+        id: '3',
+        senderId: 'other',
+        content:
+          'Thanks for reaching out! I would love to collaborate on this. What are the specific deliverables you have in mind?',
+        createdAt: new Date(now - 1000 * 60 * 30).toISOString(),
+      },
+    ];
+  });
 
   const handleSendMessage = () => {
     if (!newMessage.trim()) return;

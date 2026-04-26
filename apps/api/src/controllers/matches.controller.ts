@@ -32,8 +32,9 @@ export class MatchesController {
 
   async getById(req: Request, res: Response, next: NextFunction) {
     try {
+      const userId = req.user!.sub;
       const { matchId } = req.params;
-      const match = await matchService.getById(matchId);
+      const match = await matchService.getById(matchId, userId);
 
       sendSuccess(res, match);
     } catch (error) {

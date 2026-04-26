@@ -19,6 +19,14 @@ export interface AuthTokens {
   expiresIn: number;
 }
 
+/**
+ * Internal type — the raw refresh token is set as an httpOnly cookie by the
+ * controller and is never exposed in API response bodies.
+ */
+export interface AuthTokensWithRefresh extends AuthTokens {
+  refreshToken: string;
+}
+
 export interface LoginRequest {
   email: string;
   password: string;

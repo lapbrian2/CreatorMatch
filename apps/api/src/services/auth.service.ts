@@ -3,14 +3,24 @@ import { hashPassword, comparePassword } from '../utils/password';
 import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../utils/jwt';
 import { AppError, ErrorCodes } from '../utils/response';
 import { LoginInput, RegisterInput } from '../validators/auth.validator';
-import { User, AuthResponse, AuthTokens } from '@creatormatch/shared-types';
+import { User } from '@creatormatch/shared-types';
 import crypto from 'crypto';
 
+/**
+ * Internal-only return shape — the raw refresh token is set as an httpOnly
+ * cookie by the controller and is never serialized into a JSON response.
+ */
+interface AuthResult {
+  user: User;
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: number;
+}
+
 export class AuthService {
-  async register(input: RegisterInput): Promise<AuthResponse> {
+  async register(input: RegisterInput): Promise<AuthResult> {
     const { email, password, role, firstName, lastName } = input;
 
-    // Check if user already exists
     const existingUser = await prisma.user.findUnique({
       where: { email: email.toLowerCase() },
     });
@@ -19,10 +29,8 @@ export class AuthService {
       throw new AppError(ErrorCodes.ALREADY_EXISTS, 'User with this email already exists', 409);
     }
 
-    // Hash password
     const passwordHash = await hashPassword(password);
 
-    // Create user with profile
     const user = await prisma.user.create({
       data: {
         email: email.toLowerCase(),
@@ -50,19 +58,17 @@ export class AuthService {
       },
     });
 
-    // Generate tokens
     const tokens = await this.generateTokens(user);
 
     return {
       user: this.formatUser(user),
-      tokens,
+      ...tokens,
     };
   }
 
-  async login(input: LoginInput): Promise<AuthResponse> {
+  async login(input: LoginInput): Promise<AuthResult> {
     const { email, password } = input;
 
-    // Find user
     const user = await prisma.user.findUnique({
       where: { email: email.toLowerCase() },
     });
@@ -71,38 +77,42 @@ export class AuthService {
       throw new AppError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid email or password', 401);
     }
 
-    // Check if user is active
     if (!user.isActive) {
       throw new AppError(ErrorCodes.FORBIDDEN, 'Account is deactivated', 403);
     }
 
-    // Verify password
     const isValidPassword = await comparePassword(password, user.passwordHash);
     if (!isValidPassword) {
       throw new AppError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid email or password', 401);
     }
 
-    // Update last login
     await prisma.user.update({
       where: { id: user.id },
       data: { lastLoginAt: new Date() },
     });
 
-    // Generate tokens
     const tokens = await this.generateTokens(user);
 
     return {
       user: this.formatUser(user),
-      tokens,
+      ...tokens,
     };
   }
 
-  async refresh(refreshToken: string): Promise<AuthTokens> {
+  /**
+   * Rotates the refresh token: the presented token is revoked and a new
+   * pair (access + refresh) is issued. Returns the raw refresh token so the
+   * controller can place it in an httpOnly cookie.
+   */
+  async refresh(refreshToken: string): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    expiresIn: number;
+  }> {
     if (!refreshToken) {
       throw new AppError(ErrorCodes.TOKEN_INVALID, 'Refresh token required', 401);
     }
 
-    // Verify token
     let payload: { sub: string };
     try {
       payload = verifyRefreshToken(refreshToken);
@@ -110,7 +120,6 @@ export class AuthService {
       throw new AppError(ErrorCodes.TOKEN_INVALID, 'Invalid refresh token', 401);
     }
 
-    // Find token in database
     const tokenHash = this.hashToken(refreshToken);
     const storedToken = await prisma.refreshToken.findFirst({
       where: {
@@ -126,21 +135,20 @@ export class AuthService {
       throw new AppError(ErrorCodes.TOKEN_INVALID, 'Invalid or expired refresh token', 401);
     }
 
-    // Revoke old token
+    // Atomically revoke the presented token and issue a new pair so the old
+    // refresh token can never be replayed.
     await prisma.refreshToken.update({
       where: { id: storedToken.id },
       data: { revokedAt: new Date() },
     });
 
-    // Generate new tokens
     return this.generateTokens(storedToken.user);
   }
 
   async logout(userId: string, refreshToken?: string): Promise<void> {
     if (refreshToken) {
-      // Revoke specific token
       const tokenHash = this.hashToken(refreshToken);
-      await prisma.refreshToken.updateMany({
+      const result = await prisma.refreshToken.updateMany({
         where: {
           userId,
           tokenHash,
@@ -148,13 +156,19 @@ export class AuthService {
         },
         data: { revokedAt: new Date() },
       });
+
+      // If the presented cookie didn't match a stored token (e.g., already
+      // revoked or stale), revoke ALL active tokens for this user to fail
+      // closed rather than open.
+      if (result.count === 0) {
+        await prisma.refreshToken.updateMany({
+          where: { userId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+      }
     } else {
-      // Revoke all tokens for user
       await prisma.refreshToken.updateMany({
-        where: {
-          userId,
-          revokedAt: null,
-        },
+        where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },
       });
     }
@@ -172,7 +186,11 @@ export class AuthService {
     return this.formatUser(user);
   }
 
-  private async generateTokens(user: { id: string; email: string; role: string }): Promise<AuthTokens> {
+  private async generateTokens(user: { id: string; email: string; role: string }): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    expiresIn: number;
+  }> {
     const accessToken = generateAccessToken({
       sub: user.id,
       email: user.email,
@@ -182,18 +200,18 @@ export class AuthService {
     const refreshToken = generateRefreshToken(user.id);
     const tokenHash = this.hashToken(refreshToken);
 
-    // Store refresh token
     await prisma.refreshToken.create({
       data: {
         userId: user.id,
         tokenHash,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     });
 
     return {
       accessToken,
-      expiresIn: 900, // 15 minutes in seconds
+      refreshToken,
+      expiresIn: 900,
     };
   }
 

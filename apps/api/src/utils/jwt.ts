@@ -1,4 +1,4 @@
-import jwt from 'jsonwebtoken';
+import jwt, { SignOptions } from 'jsonwebtoken';
 import { env } from '../config/env';
 import { UserRole } from '@creatormatch/shared-types';
 
@@ -11,15 +11,17 @@ export interface JWTPayload {
 }
 
 export function generateAccessToken(payload: Omit<JWTPayload, 'iat' | 'exp'>): string {
-  return jwt.sign(payload, env.JWT_SECRET, {
-    expiresIn: env.JWT_ACCESS_EXPIRES_IN,
-  });
+  const options: SignOptions = {
+    expiresIn: env.JWT_ACCESS_EXPIRES_IN as SignOptions['expiresIn'],
+  };
+  return jwt.sign(payload, env.JWT_SECRET, options);
 }
 
 export function generateRefreshToken(userId: string): string {
-  return jwt.sign({ sub: userId }, env.JWT_REFRESH_SECRET, {
-    expiresIn: env.JWT_REFRESH_EXPIRES_IN,
-  });
+  const options: SignOptions = {
+    expiresIn: env.JWT_REFRESH_EXPIRES_IN as SignOptions['expiresIn'],
+  };
+  return jwt.sign({ sub: userId }, env.JWT_REFRESH_SECRET, options);
 }
 
 export function verifyAccessToken(token: string): JWTPayload {

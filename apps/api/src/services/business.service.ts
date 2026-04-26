@@ -147,6 +147,13 @@ export class BusinessService {
     };
   }
 
+  /**
+   * Cancels at period end. We DO NOT write `canceled` to the local DB here —
+   * the user has already paid through the end of the period and locking them
+   * out immediately is both a UX bug and a chargeback risk. Status is
+   * updated by the `customer.subscription.updated` webhook when the cancel
+   * actually takes effect.
+   */
   async cancelSubscription(userId: string): Promise<void> {
     const business = await prisma.businessProfile.findUnique({
       where: { userId },
@@ -155,7 +162,6 @@ export class BusinessService {
     if (!business) {
       throw new AppError(ErrorCodes.NOT_FOUND, 'Business profile not found', 404);
     }
-
     if (!business.stripeSubscriptionId) {
       throw new AppError(ErrorCodes.NOT_FOUND, 'No active subscription', 404);
     }
@@ -163,13 +169,12 @@ export class BusinessService {
     await stripe.subscriptions.update(business.stripeSubscriptionId, {
       cancel_at_period_end: true,
     });
-
-    await prisma.businessProfile.update({
-      where: { id: business.id },
-      data: { subscriptionStatus: 'canceled' },
-    });
   }
 
+  /**
+   * Mirror of cancel — no optimistic local-DB write. Status updates happen
+   * via webhook when Stripe confirms the new state.
+   */
   async resumeSubscription(userId: string): Promise<void> {
     const business = await prisma.businessProfile.findUnique({
       where: { userId },
@@ -178,7 +183,6 @@ export class BusinessService {
     if (!business) {
       throw new AppError(ErrorCodes.NOT_FOUND, 'Business profile not found', 404);
     }
-
     if (!business.stripeSubscriptionId) {
       throw new AppError(ErrorCodes.NOT_FOUND, 'No subscription to resume', 404);
     }
@@ -186,13 +190,15 @@ export class BusinessService {
     await stripe.subscriptions.update(business.stripeSubscriptionId, {
       cancel_at_period_end: false,
     });
-
-    await prisma.businessProfile.update({
-      where: { id: business.id },
-      data: { subscriptionStatus: 'active' },
-    });
   }
 
+  /**
+   * Live subscription gate. Reads from local DB first, but defends against
+   * stale data:
+   *  - A `trialing` business whose `trialEndsAt` is in the past is treated
+   *    as inactive (covers webhook delivery delays after Stripe converts
+   *    expired trials to canceled).
+   */
   async hasActiveSubscription(userId: string): Promise<boolean> {
     const business = await prisma.businessProfile.findUnique({
       where: { userId },
@@ -200,10 +206,14 @@ export class BusinessService {
 
     if (!business) return false;
 
-    return (
-      business.subscriptionStatus === 'active' ||
-      business.subscriptionStatus === 'trialing'
-    );
+    if (business.subscriptionStatus === 'trialing') {
+      if (business.trialEndsAt && business.trialEndsAt.getTime() < Date.now()) {
+        return false;
+      }
+      return true;
+    }
+
+    return business.subscriptionStatus === 'active';
   }
 
   private formatBusiness(business: any): BusinessProfile {

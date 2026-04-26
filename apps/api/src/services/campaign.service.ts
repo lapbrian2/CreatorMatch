@@ -154,9 +154,7 @@ export class CampaignService {
     const campaign = await prisma.campaign.findUnique({
       where: { id },
       include: {
-        business: {
-          select: { userId: true },
-        },
+        business: { select: { userId: true } },
       },
     });
 
@@ -172,16 +170,62 @@ export class CampaignService {
       throw new AppError(ErrorCodes.CONFLICT, 'Can only launch draft campaigns', 409);
     }
 
-    const updated = await prisma.campaign.update({
-      where: { id },
-      data: { status: 'active' },
-    });
+    // Validation gate — these checks must pass before money or matching
+    // commitments can be made.
+    if (!campaign.budgetCents || campaign.budgetCents <= 0) {
+      throw new AppError(ErrorCodes.VALIDATION_ERROR, 'Campaign budget must be positive', 400);
+    }
+    if (
+      campaign.paymentPerCreatorCents &&
+      campaign.paymentPerCreatorCents > campaign.budgetCents
+    ) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_ERROR,
+        'Payment per creator cannot exceed total campaign budget',
+        400
+      );
+    }
+    if (campaign.endDate && campaign.endDate.getTime() < Date.now()) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_ERROR,
+        'Campaign end date must be in the future',
+        400
+      );
+    }
+    if (
+      campaign.contentDeadline &&
+      campaign.contentDeadline.getTime() < Date.now()
+    ) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_ERROR,
+        'Content deadline must be in the future',
+        400
+      );
+    }
+    if (
+      campaign.minFollowers !== null &&
+      campaign.maxFollowers !== null &&
+      campaign.maxFollowers !== undefined &&
+      campaign.minFollowers !== undefined &&
+      campaign.minFollowers > campaign.maxFollowers
+    ) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_ERROR,
+        'minFollowers cannot exceed maxFollowers',
+        400
+      );
+    }
 
-    // Update business active campaigns count
-    await prisma.businessProfile.update({
-      where: { id: campaign.businessId },
-      data: { activeCampaignsCount: { increment: 1 } },
-    });
+    const [updated] = await prisma.$transaction([
+      prisma.campaign.update({
+        where: { id },
+        data: { status: 'active' },
+      }),
+      prisma.businessProfile.update({
+        where: { id: campaign.businessId },
+        data: { activeCampaignsCount: { increment: 1 } },
+      }),
+    ]);
 
     return this.formatCampaign(updated);
   }

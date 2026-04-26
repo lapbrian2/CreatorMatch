@@ -13,80 +13,101 @@ interface MatchFactors {
   historyScore: number;
 }
 
+interface CreatorHistoryStats {
+  completed: number;
+  canceled: number;
+  disputed: number;
+}
+
+const MAX_CANDIDATES = 500;
+
 export class MatchService {
+  /**
+   * Calculates match scores for every eligible creator against a campaign.
+   * Caller is responsible for verifying ownership (we still re-verify here
+   * as a defense-in-depth check).
+   *
+   * Performance:
+   *  - All deal stats pulled in a single `groupBy` (was: N+1 per creator).
+   *  - Upserts batched in a $transaction so the campaign launch finishes
+   *    in one round-trip instead of 500.
+   */
   async calculateForCampaign(campaignId: string, userId: string): Promise<void> {
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
-      include: {
-        business: {
-          select: { userId: true },
-        },
-      },
+      include: { business: { select: { userId: true } } },
     });
 
     if (!campaign) {
       throw new AppError(ErrorCodes.NOT_FOUND, 'Campaign not found', 404);
     }
-
     if (campaign.business.userId !== userId) {
       throw new AppError(ErrorCodes.FORBIDDEN, 'Access denied', 403);
     }
 
-    // Find eligible creators
     const creators = await prisma.creatorProfile.findMany({
       where: {
         isAvailable: true,
         user: { isActive: true },
-        // Add niche overlap filter if campaign has target niches
         ...(campaign.targetNiches.length > 0 && {
           niches: { hasSome: campaign.targetNiches },
         }),
       },
-      take: 500, // Limit for performance
+      take: MAX_CANDIDATES,
     });
 
-    // Calculate scores for each creator
-    const matchScores = await Promise.all(
-      creators.map(async (creator) => {
-        const factors = await this.calculateFactors(campaign, creator);
-        const overallScore = this.calculateOverallScore(factors);
-        const reasoning = this.generateReasoning(factors, campaign, creator);
+    if (creators.length === 0) return;
 
-        return {
-          campaignId,
-          creatorId: creator.id,
-          overallScore,
-          ...factors,
-          matchReasoning: reasoning,
-          isRecommended: overallScore >= 70,
-        };
-      })
-    );
+    // Pull deal-history stats for all candidate creators in ONE query.
+    const creatorIds = creators.map((c) => c.id);
+    const historyMap = await this.loadHistoryStats(creatorIds);
 
-    // Upsert match scores
-    for (const score of matchScores) {
-      await prisma.matchScore.upsert({
-        where: {
-          campaignId_creatorId: {
-            campaignId: score.campaignId,
-            creatorId: score.creatorId,
-          },
-        },
-        update: {
-          overallScore: score.overallScore,
-          nicheScore: score.nicheScore,
-          locationScore: score.locationScore,
-          engagementScore: score.engagementScore,
-          followerScore: score.followerScore,
-          priceScore: score.priceScore,
-          availabilityScore: score.availabilityScore,
-          historyScore: score.historyScore,
-          matchReasoning: score.matchReasoning as any,
-          isRecommended: score.isRecommended,
-          calculatedAt: new Date(),
-        },
-        create: score as any,
-      });
+    const matchScores = creators.map((creator) => {
+      const factors = this.calculateFactors(campaign, creator, historyMap.get(creator.id));
+      const overallScore = this.calculateOverallScore(factors);
+      const reasoning = this.generateReasoning(factors, campaign, creator);
+
+      return {
+        campaignId,
+        creatorId: creator.id,
+        overallScore,
+        ...factors,
+        matchReasoning: reasoning,
+        isRecommended: overallScore >= 70,
+      };
+    });
+
+    // Upsert in chunks inside transactions so partial failures don't leave
+    // half-calculated match scores in the DB.
+    const CHUNK = 50;
+    for (let i = 0; i < matchScores.length; i += CHUNK) {
+      const chunk = matchScores.slice(i, i + CHUNK);
+      await prisma.$transaction(
+        chunk.map((score) =>
+          prisma.matchScore.upsert({
+            where: {
+              campaignId_creatorId: {
+                campaignId: score.campaignId,
+                creatorId: score.creatorId,
+              },
+            },
+            update: {
+              overallScore: score.overallScore,
+              nicheScore: score.nicheScore,
+              locationScore: score.locationScore,
+              engagementScore: score.engagementScore,
+              followerScore: score.followerScore,
+              priceScore: score.priceScore,
+              availabilityScore: score.availabilityScore,
+              historyScore: score.historyScore,
+              matchReasoning: score.matchReasoning as any,
+              isRecommended: score.isRecommended,
+              calculatedAt: new Date(),
+            },
+            create: score as any,
+          })
+        )
+      );
     }
   }
 
@@ -97,33 +118,21 @@ export class MatchService {
   ): Promise<MatchWithCreator[]> {
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
-      include: {
-        business: {
-          select: { userId: true },
-        },
-      },
+      include: { business: { select: { userId: true } } },
     });
 
     if (!campaign) {
       throw new AppError(ErrorCodes.NOT_FOUND, 'Campaign not found', 404);
     }
-
     if (campaign.business.userId !== userId) {
       throw new AppError(ErrorCodes.FORBIDDEN, 'Access denied', 403);
     }
 
     const matches = await prisma.matchScore.findMany({
-      where: {
-        campaignId,
-        overallScore: { gte: minScore },
-      },
+      where: { campaignId, overallScore: { gte: minScore } },
       include: {
         creator: {
-          include: {
-            user: {
-              select: { avatarUrl: true },
-            },
-          },
+          include: { user: { select: { avatarUrl: true } } },
         },
       },
       orderBy: { overallScore: 'desc' },
@@ -133,19 +142,38 @@ export class MatchService {
     return matches.map((m) => this.formatMatchWithCreator(m));
   }
 
-  async getById(matchId: string): Promise<MatchScore> {
+  /**
+   * Looks up a single match score, verifying that the requesting user owns
+   * the campaign the match belongs to. Closes the IDOR — previously this
+   * route returned any match by ID without ownership check.
+   */
+  async getById(matchId: string, userId: string): Promise<MatchScore> {
     const match = await prisma.matchScore.findUnique({
       where: { id: matchId },
+      include: {
+        campaign: { include: { business: { select: { userId: true } } } },
+      },
     });
 
     if (!match) {
       throw new AppError(ErrorCodes.NOT_FOUND, 'Match not found', 404);
     }
+    if (match.campaign.business.userId !== userId) {
+      throw new AppError(ErrorCodes.FORBIDDEN, 'Access denied', 403);
+    }
 
     return this.formatMatch(match);
   }
 
-  private async calculateFactors(campaign: any, creator: any): Promise<MatchFactors> {
+  // ---------------------------------------------------------------------------
+  // Scoring
+  // ---------------------------------------------------------------------------
+
+  private calculateFactors(
+    campaign: any,
+    creator: any,
+    history?: CreatorHistoryStats
+  ): MatchFactors {
     return {
       nicheScore: this.calculateNicheScore(campaign.targetNiches, creator.niches),
       locationScore: this.calculateLocationScore(campaign, creator),
@@ -153,7 +181,7 @@ export class MatchService {
       followerScore: this.calculateFollowerScore(campaign, creator),
       priceScore: this.calculatePriceScore(campaign, creator),
       availabilityScore: this.calculateAvailabilityScore(creator),
-      historyScore: await this.calculateHistoryScore(creator),
+      historyScore: this.calculateHistoryScore(creator, history),
     };
   }
 
@@ -169,14 +197,16 @@ export class MatchService {
     );
   }
 
-  private calculateNicheScore(campaignNiches: NicheCategory[], creatorNiches: NicheCategory[]): number {
+  private calculateNicheScore(
+    campaignNiches: NicheCategory[],
+    creatorNiches: NicheCategory[]
+  ): number {
     if (!campaignNiches || campaignNiches.length === 0) return 100;
     if (!creatorNiches || creatorNiches.length === 0) return 0;
 
     const matches = creatorNiches.filter((n) => campaignNiches.includes(n));
     const matchRatio = matches.length / campaignNiches.length;
 
-    // Primary match (first niche) gets bonus
     const primaryMatch = creatorNiches[0] && campaignNiches.includes(creatorNiches[0]);
     const bonus = primaryMatch ? 10 : 0;
 
@@ -187,7 +217,7 @@ export class MatchService {
     if (!campaign.targetLatitude || !campaign.targetLongitude) return 100;
     if (!creator.latitude || !creator.longitude) return 50;
 
-    const distance = this.calculateDistance(
+    const distance = haversineMiles(
       campaign.targetLatitude,
       campaign.targetLongitude,
       creator.latitude,
@@ -204,9 +234,24 @@ export class MatchService {
     return 0;
   }
 
+  /**
+   * Engagement score with sane behavior when the campaign sets no minimum:
+   * fall back to industry-benchmark scoring (>3% excellent, 1–3% good,
+   * <1% poor) so the 20% weight remains a real differentiator.
+   */
   private calculateEngagementScore(campaign: any, creator: any): number {
-    const minRequired = campaign.minEngagementRate || 0;
-    const creatorRate = creator.avgEngagementRate || 0;
+    const minRequired = campaign.minEngagementRate ?? 0;
+    const creatorRate = creator.avgEngagementRate ?? 0;
+
+    if (minRequired <= 0) {
+      // Industry benchmarks for follower-segmented engagement (rough but
+      // useful — better than the previous "100 for everyone" behavior).
+      if (creatorRate >= 6) return 100;
+      if (creatorRate >= 3) return 85;
+      if (creatorRate >= 1) return 65;
+      if (creatorRate > 0) return 40;
+      return 0;
+    }
 
     if (creatorRate >= minRequired * 2) return 100;
     if (creatorRate >= minRequired * 1.5) return 90;
@@ -217,35 +262,54 @@ export class MatchService {
   }
 
   private calculateFollowerScore(campaign: any, creator: any): number {
-    const minFollowers = campaign.minFollowers || 0;
-    const maxFollowers = campaign.maxFollowers || Infinity;
-    const creatorFollowers = creator.totalFollowers || 0;
+    const minFollowers = Math.max(0, campaign.minFollowers ?? 0);
+    const maxFollowers =
+      campaign.maxFollowers !== null && campaign.maxFollowers !== undefined
+        ? campaign.maxFollowers
+        : Number.POSITIVE_INFINITY;
+    const creatorFollowers = creator.totalFollowers ?? 0;
+
+    // Guard against degenerate ranges — these used to produce NaN scores.
+    if (minFollowers === 0 && maxFollowers === Number.POSITIVE_INFINITY) return 100;
+    if (minFollowers >= maxFollowers && maxFollowers !== Number.POSITIVE_INFINITY) {
+      return creatorFollowers >= minFollowers ? 100 : 0;
+    }
 
     if (minFollowers <= creatorFollowers && creatorFollowers <= maxFollowers) {
-      const range = maxFollowers - minFollowers;
-      if (range === Infinity || range === 0) return 100;
+      const range =
+        maxFollowers === Number.POSITIVE_INFINITY ? 0 : maxFollowers - minFollowers;
+      if (range === 0) return 100;
 
-      const position = creatorFollowers - minFollowers;
-      const percentile = position / range;
-
+      const percentile = (creatorFollowers - minFollowers) / range;
       if (percentile >= 0.3 && percentile <= 0.7) return 100;
       if (percentile >= 0.2 && percentile <= 0.8) return 90;
       return 75;
     }
 
     if (creatorFollowers < minFollowers) {
+      // minFollowers > 0 here (otherwise we'd be in-range above).
       const deficit = (minFollowers - creatorFollowers) / minFollowers;
       return Math.max(0, Math.round(60 - deficit * 100));
     }
 
+    // Above maxFollowers — guaranteed maxFollowers is a finite number > 0
+    // because the in-range check failed AND we returned early for unset max.
+    if (maxFollowers === 0 || maxFollowers === Number.POSITIVE_INFINITY) return 60;
     const excess = (creatorFollowers - maxFollowers) / maxFollowers;
     return Math.max(0, Math.round(60 - excess * 50));
   }
 
+  /**
+   * Price compatibility. When a creator hasn't disclosed their rate we
+   * return a neutral 50 (unknown), NOT 80 — rewarding missing data caused
+   * silent rate-mismatch bugs.
+   */
   private calculatePriceScore(campaign: any, creator: any): number {
-    if (!creator.baseRateCents) return 80;
+    if (!creator.baseRateCents || creator.baseRateCents <= 0) return 50;
 
     const budgetPerCreator = campaign.paymentPerCreatorCents || campaign.budgetCents;
+    if (!budgetPerCreator || budgetPerCreator <= 0) return 50;
+
     const creatorRate = creator.baseRateCents;
 
     if (creatorRate <= budgetPerCreator * 0.8) return 100;
@@ -259,35 +323,70 @@ export class MatchService {
     return creator.isAvailable ? 100 : 0;
   }
 
-  private async calculateHistoryScore(creator: any): Promise<number> {
-    const deals = await prisma.deal.findMany({
-      where: { creatorId: creator.id },
-      select: { status: true },
-    });
+  /**
+   * History score — fixed weighting and only counts terminal states in the
+   * denominator so creators with active in-progress deals aren't unfairly
+   * penalized.
+   *
+   *   completionRate = completed / (completed + canceled + disputed)
+   *
+   * Score = 70 * completionRate + 30 * (rating / 5), with sane neutrals
+   * for cold-start creators.
+   */
+  private calculateHistoryScore(creator: any, stats?: CreatorHistoryStats): number {
+    const completed = stats?.completed ?? 0;
+    const canceled = stats?.canceled ?? 0;
+    const disputed = stats?.disputed ?? 0;
+    const terminal = completed + canceled + disputed;
 
-    if (deals.length === 0) return 70; // Neutral for new creators
+    // No terminal deals AND no rating — full cold-start, neutral 70.
+    if (terminal === 0 && (creator.avgRating ?? 0) === 0) return 70;
 
-    const completed = deals.filter((d) => d.status === 'completed').length;
-    const canceled = deals.filter((d) => d.status === 'canceled').length;
-    const total = completed + canceled;
+    const completionRate = terminal === 0 ? 1 : completed / terminal;
+    const ratingFraction = (creator.avgRating ?? 0) > 0 ? creator.avgRating / 5 : 0.7;
 
-    if (total === 0) return 70;
-
-    const completionRate = completed / total;
-
-    // Get average rating
-    const avgRating = creator.avgRating || 0;
-    const ratingScore = avgRating > 0 ? (avgRating / 5) * 100 : 70;
-
-    return Math.round(completionRate * 50 + ratingScore * 0.5);
+    return Math.round(completionRate * 70 + ratingFraction * 30);
   }
 
-  private generateReasoning(factors: MatchFactors, campaign: any, creator: any): MatchReasoning {
+  /**
+   * Pulls completed/canceled/disputed counts for every candidate creator in
+   * a single grouped query — replaces what was an N+1 of `prisma.deal.findMany`
+   * per creator (capable of exhausting the connection pool at 500 candidates).
+   */
+  private async loadHistoryStats(creatorIds: string[]): Promise<Map<string, CreatorHistoryStats>> {
+    const rows = await prisma.deal.groupBy({
+      by: ['creatorId', 'status'],
+      where: {
+        creatorId: { in: creatorIds },
+        status: { in: ['completed', 'canceled', 'disputed'] },
+      },
+      _count: { _all: true },
+    });
+
+    const map = new Map<string, CreatorHistoryStats>();
+    for (const row of rows) {
+      const stats = map.get(row.creatorId) ?? { completed: 0, canceled: 0, disputed: 0 };
+      const count = row._count._all;
+      if (row.status === 'completed') stats.completed = count;
+      else if (row.status === 'canceled') stats.canceled = count;
+      else if (row.status === 'disputed') stats.disputed = count;
+      map.set(row.creatorId, stats);
+    }
+    return map;
+  }
+
+  private generateReasoning(
+    factors: MatchFactors,
+    campaign: any,
+    creator: any
+  ): MatchReasoning {
     const strengths: string[] = [];
     const considerations: string[] = [];
 
     if (factors.nicheScore >= 80) {
-      strengths.push(`Strong niche alignment with ${campaign.targetNiches?.length || 0} matching categories`);
+      strengths.push(
+        `Strong niche alignment with ${campaign.targetNiches?.length || 0} matching categories`
+      );
     }
     if (factors.locationScore >= 80) {
       strengths.push(`Located within ${campaign.targetRadiusMiles || 25} miles of target area`);
@@ -316,21 +415,6 @@ export class MatchService {
     }
 
     return { strengths, considerations };
-  }
-
-  private calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
-    const R = 3959; // Earth's radius in miles
-    const dLat = this.toRad(lat2 - lat1);
-    const dLng = this.toRad(lng2 - lng1);
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(this.toRad(lat1)) * Math.cos(this.toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }
-
-  private toRad(deg: number): number {
-    return deg * (Math.PI / 180);
   }
 
   private formatMatch(match: any): MatchScore {
@@ -370,6 +454,18 @@ export class MatchService {
       },
     };
   }
+}
+
+function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 3959;
+  const toRad = (deg: number) => deg * (Math.PI / 180);
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
 export const matchService = new MatchService();

@@ -26,6 +26,7 @@ export interface CreatorProfile {
   displayName: string;
   bio?: string;
   headline?: string;
+  avatarUrl?: string;
   location?: Location;
   city?: string;
   state?: string;
@@ -46,8 +47,10 @@ export interface CreatorProfile {
   profileCompleteness: number;
   isVerified: boolean;
   isAvailable: boolean;
-  stripeAccountId?: string;
   stripeOnboardingComplete: boolean;
+  // NOTE: `stripeAccountId` was intentionally removed from the shared
+  // public type — the connect account ID is private. The own-profile
+  // endpoint returns it via a separate richer shape in the API service.
   createdAt: string;
   updatedAt: string;
 }

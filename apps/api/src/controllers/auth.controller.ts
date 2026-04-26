@@ -1,8 +1,22 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction, CookieOptions } from 'express';
 import { authService } from '../services/auth.service';
 import { sendSuccess } from '../utils/response';
 import { LoginInput, RegisterInput } from '../validators/auth.validator';
 import { env } from '../config/env';
+
+const REFRESH_COOKIE_NAME = 'refreshToken';
+const REFRESH_COOKIE_PATH = '/api/v1/auth';
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+function refreshCookieOptions(): CookieOptions {
+  return {
+    httpOnly: true,
+    secure: env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: REFRESH_COOKIE_PATH,
+    maxAge: SEVEN_DAYS_MS,
+  };
+}
 
 export class AuthController {
   async register(req: Request, res: Response, next: NextFunction) {
@@ -10,10 +24,16 @@ export class AuthController {
       const input: RegisterInput = req.body;
       const result = await authService.register(input);
 
-      // Set refresh token as HTTP-only cookie
-      this.setRefreshTokenCookie(res, result.tokens.accessToken);
+      res.cookie(REFRESH_COOKIE_NAME, result.refreshToken, refreshCookieOptions());
 
-      sendSuccess(res, result, 201);
+      sendSuccess(
+        res,
+        {
+          user: result.user,
+          tokens: { accessToken: result.accessToken, expiresIn: result.expiresIn },
+        },
+        201
+      );
     } catch (error) {
       next(error);
     }
@@ -24,9 +44,12 @@ export class AuthController {
       const input: LoginInput = req.body;
       const result = await authService.login(input);
 
-      this.setRefreshTokenCookie(res, result.tokens.accessToken);
+      res.cookie(REFRESH_COOKIE_NAME, result.refreshToken, refreshCookieOptions());
 
-      sendSuccess(res, result);
+      sendSuccess(res, {
+        user: result.user,
+        tokens: { accessToken: result.accessToken, expiresIn: result.expiresIn },
+      });
     } catch (error) {
       next(error);
     }
@@ -34,12 +57,14 @@ export class AuthController {
 
   async refresh(req: Request, res: Response, next: NextFunction) {
     try {
-      const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
-      const tokens = await authService.refresh(refreshToken);
+      const presented = req.cookies?.[REFRESH_COOKIE_NAME] || req.body?.refreshToken;
+      const tokens = await authService.refresh(presented);
 
-      this.setRefreshTokenCookie(res, tokens.accessToken);
+      res.cookie(REFRESH_COOKIE_NAME, tokens.refreshToken, refreshCookieOptions());
 
-      sendSuccess(res, { tokens });
+      sendSuccess(res, {
+        tokens: { accessToken: tokens.accessToken, expiresIn: tokens.expiresIn },
+      });
     } catch (error) {
       next(error);
     }
@@ -48,16 +73,15 @@ export class AuthController {
   async logout(req: Request, res: Response, next: NextFunction) {
     try {
       const userId = req.user!.sub;
-      const refreshToken = req.cookies.refreshToken;
+      const refreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
 
       await authService.logout(userId, refreshToken);
 
-      // Clear refresh token cookie
-      res.clearCookie('refreshToken', {
+      res.clearCookie(REFRESH_COOKIE_NAME, {
         httpOnly: true,
         secure: env.NODE_ENV === 'production',
         sameSite: 'strict',
-        path: '/api/v1/auth',
+        path: REFRESH_COOKIE_PATH,
       });
 
       sendSuccess(res, { message: 'Logged out successfully' });
@@ -75,18 +99,6 @@ export class AuthController {
     } catch (error) {
       next(error);
     }
-  }
-
-  private setRefreshTokenCookie(res: Response, _accessToken: string) {
-    // Note: In a real implementation, we'd set the refresh token here
-    // For now, we're returning it in the response body for simplicity
-    res.cookie('refreshToken', 'token', {
-      httpOnly: true,
-      secure: env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      path: '/api/v1/auth',
-    });
   }
 }
 
